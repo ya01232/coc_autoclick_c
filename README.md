@@ -1,1 +1,0 @@
-# coc_autoclick_c
