@@ -1,0 +1,360 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <opencv2/opencv.hpp>
+
+using namespace cv;
+using namespace std;
+
+// 配置参数结构体，集中管理常量
+struct Config {
+    static constexpr const char* DEVICE = "127.0.0.1:16384";
+    static constexpr float FIXED_THRESHOLD = 0.25f;
+    static constexpr const char* SCREENSHOT_PATH = "./screenshot.png";
+    static constexpr const char* UI_TEMPLATE_DIR = "./ui/";
+    static constexpr int RETRY_ATTEMPTS = 1;  // 重试次数
+    static constexpr int CLICK_DELAY_MS = 500000;  // 点击间隔微秒
+    static constexpr int PROCESS_DELAY_SEC = 5;    // 流程间隔秒数
+};
+
+// 全局坐标变量（仅在匹配成功后有效）
+int GLOBAL_X = -1;
+int GLOBAL_Y = -1;
+
+/**
+ * 执行系统命令并返回结果（Windows 兼容版）
+ * @param cmd 要执行的命令
+ * @return 0表示成功，-1表示失败
+ */
+int execute_command(const char* cmd) {
+    if (!cmd || strlen(cmd) == 0) return -1;
+
+    FILE* pipe = _popen(cmd, "r");  // Windows 下使用 _popen
+    if (!pipe) return -1;
+    
+    char buffer[128];
+    while (!feof(pipe)) {
+        fgets(buffer, 128, pipe);  // 读取输出（可根据需要处理）
+    }
+    
+    int ret = _pclose(pipe);  // Windows 下使用 _pclose
+    return ret == 0 ? 0 : -1;
+}
+
+/**
+ * 通过ADB执行点击操作
+ * @param x 点击x坐标
+ * @param y 点击y坐标
+ */
+void adb_click(int x, int y) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "adb -s %s shell input tap %d %d", 
+             Config::DEVICE, x, y);
+    
+    if (execute_command(cmd) == 0) {
+        printf("ADB点击成功：(%d, %d)\n", x, y);
+    } else {
+        printf("ADB点击失败：(%d, %d)\n", x, y);
+    }
+}
+
+/**
+ * 通过ADB执行滑动操作
+ * @param x1 起始x坐标
+ * @param y1 起始y坐标
+ * @param x2 目标x坐标
+ * @param y2 目标y坐标
+ * @param duration 滑动持续时间(秒)
+ */
+void adb_swipe(int x1, int y1, int x2, int y2, float duration) {
+    int duration_ms = static_cast<int>(duration * 1000);
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "adb -s %s shell input swipe %d %d %d %d %d",
+             Config::DEVICE, x1, y1, x2, y2, duration_ms);
+    
+    if (execute_command(cmd) == 0) {
+        printf("ADB滑动成功：(%d,%d) -> (%d,%d) 耗时%.1f秒\n",
+               x1, y1, x2, y2, duration);
+    } else {
+        printf("ADB滑动失败：(%d,%d) -> (%d,%d)\n",
+               x1, y1, x2, y2);
+    }
+}
+
+/**
+ * 检查文件是否存在
+ * @param path 文件路径
+ * @return 1表示存在，0表示不存在
+ */
+int file_exists(const char* path) {
+    if (!path) return 0;
+    struct stat buffer;
+    return (stat(path, &buffer) == 0) ? 1 : 0;
+}
+
+/**
+ * 检查截图文件是否存在
+ * @return 1表示存在，0表示不存在
+ */
+int check_screenshot() {
+    if (file_exists(Config::SCREENSHOT_PATH)) {
+        printf("截图文件存在：%s\n", Config::SCREENSHOT_PATH);
+        return 1;
+    } else {
+        printf("警告：截图文件不存在 %s\n", Config::SCREENSHOT_PATH);
+        return 0;
+    }
+}
+
+/**
+ * 模板匹配（支持重试机制）
+ * @param img_model_path 模板图片文件名
+ * @return 1表示匹配成功，0表示失败
+ */
+int match_template(const char* img_model_path) {
+    if (!img_model_path) return 0;
+
+    char full_model_path[256];
+    snprintf(full_model_path, sizeof(full_model_path), 
+             "%s%s", Config::UI_TEMPLATE_DIR, img_model_path);
+    
+    // 检查模板文件是否存在
+    if (!file_exists(full_model_path)) {
+        printf("模板文件不存在：%s\n", full_model_path);
+        GLOBAL_X = -1;
+        GLOBAL_Y = -1;
+        return 0;
+    }
+    
+    // 读取模板
+    Mat img_model = imread(full_model_path);
+    if (img_model.empty()) {
+        printf("无法读取模板：%s\n", full_model_path);
+        GLOBAL_X = -1;
+        GLOBAL_Y = -1;
+        return 0;
+    }
+    
+    int model_h = img_model.rows;
+    int model_w = img_model.cols;
+    
+    // 重试机制
+    for (int attempt = 0; attempt <= Config::RETRY_ATTEMPTS; attempt++) {
+        if (!check_screenshot()) {
+            usleep(Config::CLICK_DELAY_MS);
+            continue;
+        }
+        
+        // 读取截图（每次重试重新读取）
+        Mat img = imread(Config::SCREENSHOT_PATH);
+        if (img.empty()) {
+            printf("无法读取截图 %s（尝试 %d/%d）\n", 
+                   Config::SCREENSHOT_PATH, attempt + 1, Config::RETRY_ATTEMPTS + 1);
+            usleep(Config::CLICK_DELAY_MS);
+            continue;
+        }
+        
+        // 模板匹配（使用平方差归一化方法）
+        Mat result;
+        matchTemplate(img, img_model, result, TM_SQDIFF_NORMED);
+        double min_val;
+        Point min_loc;
+        minMaxLoc(result, &min_val, nullptr, &min_loc, nullptr);
+        
+        // 判断匹配结果
+        if (min_val <= Config::FIXED_THRESHOLD) {
+            GLOBAL_X = min_loc.x + model_w / 2;  // 计算中心坐标
+            GLOBAL_Y = min_loc.y + model_h / 2;
+            printf("%s 匹配成功（尝试 %d）：坐标 (%d, %d)，匹配值 %.4f\n",
+                   img_model_path, attempt + 1, GLOBAL_X, GLOBAL_Y, min_val);
+            return 1;
+        } else {
+            printf("%s 匹配失败（尝试 %d）：匹配值 %.4f > 阈值 %.2f\n",
+                   img_model_path, attempt + 1, min_val, Config::FIXED_THRESHOLD);
+            if (attempt < Config::RETRY_ATTEMPTS) {
+                usleep(Config::CLICK_DELAY_MS);
+            }
+        }
+    }
+    
+    // 所有重试失败
+    printf("%s 所有尝试均失败\n", img_model_path);
+    GLOBAL_X = -1;
+    GLOBAL_Y = -1;
+    return 0;
+}
+
+/**
+ * 处理模板列表
+ * @param templates 模板文件名数组
+ * @param count 模板数量
+ * @param click_after_match 匹配成功后是否点击
+ */
+void process_templates(const char* templates[], int count, int click_after_match) {
+    printf("使用ADB连接设备：%s，匹配阈值：%.2f\n", 
+           Config::DEVICE, Config::FIXED_THRESHOLD);
+    
+    for (int i = 0; i < count; i++) {
+        const char* template_name = templates[i];
+        printf("\n===== 处理模板：%s =====\n", template_name);
+        
+        if (!check_screenshot()) {
+            continue;
+        }
+        
+        // 执行匹配
+        int found = match_template(template_name);
+        
+        // 匹配成功且需要点击
+        if (click_after_match && found && GLOBAL_X != -1 && GLOBAL_Y != -1) {
+            printf("准备点击坐标：(%d, %d)\n", GLOBAL_X, GLOBAL_Y);
+            adb_click(GLOBAL_X, GLOBAL_Y);
+            sleep(1);  // 等待界面响应
+        } else if (!found) {
+            printf("跳过 %s 点击（无有效坐标）\n", template_name);
+        }
+    }
+}
+
+// 各个处理函数（保持功能不变，优化命名）
+void process_grassman() {  // 草莽
+    const char* templates[] = {"caoman.png"};
+    process_templates(templates, 1, 1);
+}
+
+void process_matching() {  // 匹配
+    const char* templates[] = {"jingong.png", "sousuo.png"};
+    process_templates(templates, 2, 1);
+}
+
+void process_gohome() {  // 回家
+    const char* templates[] = {"jieshu.png", "queding.png", "huiying.png"};
+    process_templates(templates, 3, 1);
+}
+
+void process_queen() {  // 女皇
+    const char* templates[] = {"nvhuang.png"};
+    process_templates(templates, 1, 1);
+}
+
+void process_fullking() {  // 满王
+    const char* templates[] = {"manwang.png"};
+    process_templates(templates, 1, 1);
+}
+
+void process_braveking() {  // 勇王
+    const char* templates[] = {"yongwang.png"};
+    process_templates(templates, 1, 1);
+}
+
+void process_soiltu() {  // 闰土
+    const char* templates[] = {"runtu.png"};
+    process_templates(templates, 1, 1);
+}
+
+void process_eagle() {  // 苍鹰
+    const char* templates[] = {"cangying.png"};
+    process_templates(templates, 1, 1);
+}
+
+void process_dragon() {  // 飞龙
+    const char* templates[] = {"feilong.png"};
+    process_templates(templates, 1, 1);
+}
+
+void process_thunder() {  // 雷电
+    const char* templates[] = {"leidian.png"};
+    process_templates(templates, 1, 1);
+}
+
+int process_bird() {  // 天鸟
+    const char* templates[] = {"tianniao.png"};
+    process_templates(templates, 1, 0);
+    return (GLOBAL_X != -1 && GLOBAL_Y != -1) ? 1 : 0;
+}
+
+/**
+ * 执行内部点击序列
+ * @param sequence 点击坐标序列
+ * @param count 序列长度
+ */
+void execute_click_sequence(const int sequence[][2], int count) {
+    for (int i = 0; i < count; i++) {
+        adb_click(sequence[i][0], sequence[i][1]);
+        usleep(Config::CLICK_DELAY_MS / 2);  // 缩短序列内点击间隔
+    }
+}
+
+/**
+ * 主循环逻辑
+ */
+void main_loop() {
+    // 定义内部点击序列（提取为常量）
+    const int inner_clicks[7][2] = {
+        {670, 345}, {978, 170}, {412, 584}, {1519, 112},
+        {1773, 304}, {1833, 1091}, {737, 1085}
+    };
+    const int click_count = sizeof(inner_clicks) / sizeof(inner_clicks[0]);
+
+    for (int i = 0; i < 999; i++) {
+        printf("\n===== 主循环第 %d 轮 =====\n", i + 1);
+        
+        // 执行匹配操作
+        process_matching();
+        sleep(Config::PROCESS_DELAY_SEC);
+        
+        // 电鸟炮流程
+        process_thunder();
+        int bird_found = process_bird();
+        if (bird_found) {
+            for (int j = 0; j < 11; j++) {
+                printf("第 %d/11 次点击天鸟\n", j + 1);
+                adb_click(GLOBAL_X, GLOBAL_Y);
+                usleep(Config::CLICK_DELAY_MS);
+            }
+        } else {
+            printf("未找到天鸟，跳过点击\n");
+        }
+        
+        // 下王流程
+        process_queen();
+        adb_click(670, 345);
+        process_fullking();
+        adb_click(670, 345);
+        process_braveking();
+        adb_click(670, 345);
+        process_soiltu();
+        adb_click(670, 345);
+        process_eagle();
+        adb_click(670, 345);
+        
+        // 循环点击操作
+        for (int j = 0; j < 8; j++) {
+            process_grassman();
+            // process_dragon();  // 如需启用可取消注释
+            
+            execute_click_sequence(inner_clicks, click_count);
+            printf("第 %d/8 次点击序列完成\n", j + 1);
+            usleep(Config::CLICK_DELAY_MS);
+        }
+        
+        // 延迟后执行回家操作
+        sleep(30);
+        process_gohome();
+        sleep(Config::PROCESS_DELAY_SEC);
+    }
+}
+
+int main() {
+    // 初始检查截图文件
+    if (!check_screenshot()) {
+        printf("错误：截图文件不存在，程序将退出\n");
+        return 1;
+    }
+    
+    main_loop();
+    printf("\n所有操作执行完毕\n");
+    return 0;
+}
