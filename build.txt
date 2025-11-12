@@ -1,0 +1,6 @@
+g++ 1.cpp -o auto_click.exe `
+-IC:\a\work\tool\win\opencv-built-by-minGW\include `
+-LC:\a\work\tool\win\opencv-built-by-minGW\x64\mingw\lib `
+-lopencv_core490 -lopencv_imgproc490 -lopencv_imgcodecs490 -lopencv_highgui490 `
+-m64 -std=c++11
+

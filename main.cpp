@@ -114,7 +114,6 @@ int take_screenshot_once() {
     const char* screenshot_name = Config::SCREENSHOT_PATH;
     int ret;
     
-    // 构建ADB截图命令：截图保存到设备 -> 拉取到本地 -> 删除设备上的截图
     snprintf(adb_screenshot_cmd, sizeof(adb_screenshot_cmd), 
              "adb -s %s shell screencap -p /sdcard/%s && adb -s %s pull /sdcard/%s . && adb -s %s shell rm /sdcard/%s",
              Config::DEVICE, screenshot_name, Config::DEVICE, screenshot_name, Config::DEVICE, screenshot_name);
@@ -161,7 +160,6 @@ int match_template(const char* img_model_path) {
     int model_h = img_model.rows;
     int model_w = img_model.cols;
     
-    // 重试机制
     for (int attempt = 0; attempt <= Config::RETRY_ATTEMPTS; attempt++) {
         // 每次匹配前先刷新截图
         if (take_screenshot_once() != 0) {
@@ -184,14 +182,12 @@ int match_template(const char* img_model_path) {
             continue;
         }
         
-        // 模板匹配（使用平方差归一化方法）
         Mat result;
         matchTemplate(img, img_model, result, TM_SQDIFF_NORMED);
         double min_val;
         Point min_loc;
         minMaxLoc(result, &min_val, nullptr, &min_loc, nullptr);
         
-        // 判断匹配结果
         if (min_val <= Config::FIXED_THRESHOLD) {
             GLOBAL_X = min_loc.x + model_w / 2;  // 计算中心坐标
             GLOBAL_Y = min_loc.y + model_h / 2;
@@ -207,7 +203,6 @@ int match_template(const char* img_model_path) {
         }
     }
     
-    // 所有重试失败
     printf("%s 所有尝试均失败\n", img_model_path);
     GLOBAL_X = -1;
     GLOBAL_Y = -1;
@@ -228,72 +223,69 @@ void process_templates(const char* templates[], int count, int click_after_match
         const char* template_name = templates[i];
         printf("\n===== 处理模板：%s =====\n", template_name);
         
-        // 执行匹配（内部已包含截图刷新）
         int found = match_template(template_name);
         
-        // 匹配成功且需要点击
         if (click_after_match && found && GLOBAL_X != -1 && GLOBAL_Y != -1) {
             printf("准备点击坐标：(%d, %d)\n", GLOBAL_X, GLOBAL_Y);
             adb_click(GLOBAL_X, GLOBAL_Y);
-            sleep(1);  // 等待界面响应
+            sleep(1);
         } else if (!found) {
             printf("跳过 %s 点击（无有效坐标）\n", template_name);
         }
     }
 }
 
-// 各个处理函数（保持功能不变）
-void process_grassman() {  // 草莽
+void process_grassman() {
     const char* templates[] = {"caoman.png"};
     process_templates(templates, 1, 1);
 }
 
-void process_matching() {  // 匹配
+void process_matching() {
     const char* templates[] = {"jingong.png", "sousuo.png"};
     process_templates(templates, 2, 1);
 }
 
-void process_gohome() {  // 回家
+void process_gohome() {
     const char* templates[] = {"jieshu.png", "queding.png", "huiying.png"};
     process_templates(templates, 3, 1);
 }
 
-void process_queen() {  // 女皇
+void process_queen() {
     const char* templates[] = {"nvhuang.png"};
     process_templates(templates, 1, 1);
 }
 
-void process_fullking() {  // 满王
+void process_fullking() {
     const char* templates[] = {"manwang.png"};
     process_templates(templates, 1, 1);
 }
 
-void process_braveking() {  // 勇王
+void process_braveking() {
     const char* templates[] = {"yongwang.png"};
     process_templates(templates, 1, 1);
 }
 
-void process_soiltu() {  // 闰土
+void process_soiltu() {
     const char* templates[] = {"runtu.png"};
     process_templates(templates, 1, 1);
 }
 
-void process_eagle() {  // 苍鹰
+void process_eagle() {
     const char* templates[] = {"cangying.png"};
     process_templates(templates, 1, 1);
 }
 
-void process_dragon() {  // 飞龙
+void process_dragon() {
     const char* templates[] = {"feilong.png"};
     process_templates(templates, 1, 1);
 }
 
-void process_thunder() {  // 雷电
+void process_thunder() {
     const char* templates[] = {"leidian.png"};
     process_templates(templates, 1, 1);
 }
 
-int process_bird() {  // 天鸟
+int process_bird() {
     const char* templates[] = {"tianniao.png"};
     process_templates(templates, 1, 0);
     return (GLOBAL_X != -1 && GLOBAL_Y != -1) ? 1 : 0;
@@ -311,15 +303,10 @@ void execute_click_sequence(const int sequence[][2], int count) {
     }
 }
 
-/**
- * 初始化设备连接（仅执行一次）
- * @return 0表示成功，1表示失败
- */
 int init_device_connection() {
     char adb_connect_cmd[100];
     int ret;
     
-    // 构建ADB连接命令
     snprintf(adb_connect_cmd, sizeof(adb_connect_cmd), 
              "adb connect %s", Config::DEVICE);
     
@@ -334,11 +321,7 @@ int init_device_connection() {
     return 0;
 }
 
-/**
- * 主循环逻辑
- */
 void main_loop() {
-    // 定义内部点击序列（提取为常量）
     const int inner_clicks[7][2] = {
         {670, 345}, {978, 170}, {412, 584}, {1519, 112},
         {1773, 304}, {1833, 1091}, {737, 1085}
@@ -348,11 +331,9 @@ void main_loop() {
     for (int i = 0; i < 999; i++) {
         printf("\n===== 主循环第 %d 轮 =====\n", i + 1);
         
-        // 执行匹配操作（内部已刷新截图）
         process_matching();
         sleep(Config::PROCESS_DELAY_SEC);
         
-        // 电鸟炮流程（内部已刷新截图）
         process_thunder();
         int bird_found = process_bird();
         if (bird_found) {
@@ -365,10 +346,9 @@ void main_loop() {
             printf("未找到天鸟，跳过点击\n");
         }
         
-        // 下王流程（内部已刷新截图）
         process_queen();
         adb_click(670, 345);
-        sleep(1);  // 等待界面切换
+        sleep(1);
         process_fullking();
         adb_click(670, 345);
         sleep(1);
@@ -382,17 +362,15 @@ void main_loop() {
         adb_click(670, 345);
         sleep(1);
         
-        // 循环点击操作（内部已刷新截图）
         for (int j = 0; j < 8; j++) {
             process_grassman();
-            process_dragon();  // 已启用飞龙处理
+            process_dragon();
             
             execute_click_sequence(inner_clicks, click_count);
             printf("第 %d/8 次点击序列完成\n", j + 1);
             usleep(Config::CLICK_DELAY_MS);
         }
         
-        // 延迟后执行回家操作（内部已刷新截图）
         sleep(30);
         process_gohome();
         sleep(Config::PROCESS_DELAY_SEC);
@@ -400,13 +378,11 @@ void main_loop() {
 }
 
 int main() {
-    // 第一步：初始化设备连接（仅一次）
     if (init_device_connection() != 0) {
         printf("错误：设备连接失败，程序将退出\n");
         return 1;
     }
     
-    // 第二步：执行主循环逻辑（所有识别前自动刷新截图）
     main_loop();
     
     printf("\n所有操作执行完毕\n");
